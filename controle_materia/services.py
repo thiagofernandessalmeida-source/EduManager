@@ -1,6 +1,7 @@
 import pandas as pd
 import logging
 from datetime import datetime, timedelta
+from database import get_connection
 
 LOGGER = logging.getLogger("services")
 
@@ -30,3 +31,8 @@ def calcular_alertas(df: pd.DataFrame, dias_alerta: int):
 
     LOGGER.info(f"{len(alertas)} alertas encontrados.")
     return alertas
+
+def atualizar_registro(registro_id: int, campo: str, valor):
+    sql = f"UPDATE controle_materia SET {campo} = ? WHERE id = ?"
+    with get_connection() as con:
+        con.execute(sql, [valor, registro_id])

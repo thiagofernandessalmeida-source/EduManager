@@ -1,19 +1,25 @@
 import streamlit as st
 import pandas as pd
+import logging
 from logger_config import setup_logger
 from database import (
     create_table, fetch_all,
-    insert_record, update_status, delete_record
+    insert_record, update_status, delete_record,
+    create_professores_table, inserir_professor, listar_professores
 )
 from services import validar_colunas_excel, calcular_alertas
-import logging
 
+# ================= Setup =================
 setup_logger()
 LOGGER = logging.getLogger("app")
 
 st.set_page_config(page_title="Controle de Matéria", layout="wide")
 
-create_table()
+if "db_initialized" not in st.session_state:
+    create_table()
+    create_professores_table()
+    st.session_state.db_initialized = True
+
 
 STATUS_CORES = {
     "Não iniciado": "🔴",
@@ -21,7 +27,7 @@ STATUS_CORES = {
     "Concluído": "🟢"
 }
 
-st.title("📚 Controle e Gerenciamento de Matéria Escolar")
+st.title("📚 EduManager – Controle e Gerenciamento de Matéria Escolar")
 
 # ================= Sidebar =================
 st.sidebar.header("🔔 Configurações")
@@ -35,65 +41,138 @@ tabs = st.tabs(["📊 Visualização", "✍️ Cadastro", "⚙️ Configuraçõe
 
 # ================= Visualização =================
 with tabs[0]:
-    try:
-        df = fetch_all()
-    except Exception:
-        st.error("Erro ao carregar dados.")
-        st.stop()
+    df = fetch_all()
 
-    col1, col2 = st.columns(2)
+    professores_df = listar_professores()
+    professores = professores_df["nome"].tolist() if not professores_df.empty else []
+
+    # ================= Filtros =================
+    st.subheader("🔎 Filtros")
+
+    col1, col2, col3, col4 = st.columns(4)
+
     filtro_turma = col1.selectbox(
         "Filtrar por Turma",
         ["Todos"] + sorted(df["turma"].dropna().unique().tolist())
     )
+
     filtro_prof = col2.selectbox(
         "Filtrar por Professor",
         ["Todos"] + sorted(df["professor_titular"].dropna().unique().tolist())
     )
 
-    filtros = {}
+    filtro_materia = col3.selectbox(
+        "Filtrar por Matéria",
+        ["Todos"] + sorted(df["materia"].dropna().unique().tolist())
+    )
+
+    filtro_capitulo = col4.selectbox(
+        "Filtrar por Capítulo",
+        ["Todos"] + sorted(df["capitulo"].dropna().unique().tolist())
+    )
+
+    col_dias, _ = st.columns([1, 3])
+    filtro_dias = col_dias.number_input(
+        "Mostrar matérias com prazo em até (dias)",
+        min_value=0,
+        value=0,
+        help="0 = mostrar todas"
+    )
+
+    # ================= Aplicar filtros =================
+    hoje = pd.Timestamp.today().normalize()
+    df_filtrado = df.copy()
+
     if filtro_turma != "Todos":
-        filtros["turma"] = filtro_turma
+        df_filtrado = df_filtrado[df_filtrado["turma"] == filtro_turma]
+
     if filtro_prof != "Todos":
-        filtros["professor_titular"] = filtro_prof
+        df_filtrado = df_filtrado[df_filtrado["professor_titular"] == filtro_prof]
 
-    df_filtrado = fetch_all(filtros) if filtros else df
+    if filtro_materia != "Todos":
+        df_filtrado = df_filtrado[df_filtrado["materia"] == filtro_materia]
 
-    # Alertas
-    alertas = calcular_alertas(df_filtrado, dias_alerta)
-    if not alertas.empty:
-        st.warning(f"⚠️ {len(alertas)} matéria(s) com prazo próximo!")
+    if filtro_capitulo != "Todos":
+        df_filtrado = df_filtrado[df_filtrado["capitulo"] == filtro_capitulo]
 
-    df_filtrado["status"] = df_filtrado["status"].apply(
-        lambda x: f"{STATUS_CORES.get(x, '')} {x}"
+    # 👉 0 = não filtra
+    if filtro_dias > 0:
+        df_filtrado = df_filtrado[
+            (df_filtrado["data_limite"].notna()) &
+            ((pd.to_datetime(df_filtrado["data_limite"]) - hoje).dt.days <= filtro_dias)
+        ]
+
+    # ================= Alertas =================
+    df_filtrado["alerta"] = df_filtrado["data_limite"].apply(
+        lambda d: "⚠️ Prazo próximo"
+        if pd.notna(d) and (pd.to_datetime(d) - hoje).days <= dias_alerta
+        else ""
     )
 
-    st.dataframe(df_filtrado, use_container_width=True)
+    st.subheader("✏️ Controle de Matérias")
 
-    st.subheader("🛠️ Editar Status / Excluir")
-    record_id = st.number_input("ID do registro", min_value=1, step=1)
-    novo_status = st.selectbox(
-        "Novo Status",
-        ["Não iniciado", "Em andamento", "Concluído"]
+    edited_df = st.data_editor(
+        df_filtrado,
+        use_container_width=True,
+        num_rows="fixed",
+        key="editor_materias",
+        column_config={
+            "status": st.column_config.SelectboxColumn(
+                "Status",
+                options=["Não iniciado", "Em andamento", "Concluído"]
+            ),
+            "professor_titular": st.column_config.SelectboxColumn(
+                "Professor",
+                options=professores
+            ),
+            "data_limite": st.column_config.DateColumn(
+                "Data Limite",
+                format="DD/MM/YYYY"
+            ),
+            "alerta": st.column_config.TextColumn(
+                "⚠️ Alerta",
+                disabled=True
+            )
+        }
     )
 
-    col_a, col_b = st.columns(2)
-    if col_a.button("Atualizar Status"):
-        try:
-            update_status(record_id, novo_status)
-            st.success("Status atualizado.")
-        except Exception:
-            st.error("Erro ao atualizar status.")
+    col_save, _ = st.columns([1, 5])
 
-    if col_b.button("Excluir Registro"):
+    if col_save.button("💾 Salvar alterações"):
         try:
-            delete_record(record_id)
-            st.success("Registro excluído.")
+            for _, row in edited_df.iterrows():
+                original = df[df["id"] == row["id"]].iloc[0]
+
+                changes = {
+                    col: row[col]
+                    for col in df.columns
+                    if row[col] != original[col]
+                }
+
+                if changes:
+                    set_clause = ", ".join([f"{k} = ?" for k in changes])
+                    values = list(changes.values()) + [row["id"]]
+
+                    from database import get_connection
+                    with get_connection() as con:
+                        con.execute(
+                            f"UPDATE controle_materia SET {set_clause} WHERE id = ?",
+                            values
+                        )
+
+            st.success("Alterações salvas com sucesso.")
+            st.rerun()
+
         except Exception:
-            st.error("Erro ao excluir registro.")
+            st.error("Erro ao salvar alterações.")
 
 # ================= Cadastro =================
 with tabs[1]:
+    professores_df = listar_professores()
+    professores = professores_df["nome"].tolist() if not professores_df.empty else []
+
+    st.session_state.pop("form_enviado", None)
+
     with st.form("form_cadastro"):
         data = {
             "unidade_tematica": st.text_input("Unidade Temática"),
@@ -108,39 +187,57 @@ with tabs[1]:
                 ["Não iniciado", "Em andamento", "Concluído"]
             ),
             "data_limite": st.date_input("Data Limite"),
-            "professor_titular": st.text_input("Professor Titular"),
+            "professor_titular": st.selectbox(
+                "Professor Titular",
+                professores
+            ),
             "obs": st.text_area("Observações")
         }
 
         submitted = st.form_submit_button("Salvar")
 
         if submitted:
-            try:
-                insert_record(data)
-                st.success("Registro cadastrado com sucesso.")
-            except Exception:
-                st.error("Erro ao salvar registro.")
+            insert_record(data)
+            st.success("Registro cadastrado com sucesso.")
+
+            if "form_enviado" not in st.session_state:
+                st.session_state.form_enviado = True
+                st.rerun()
 
     st.divider()
     st.subheader("📥 Importar Excel")
 
+    if "upload_processado" not in st.session_state:
+        st.session_state.upload_processado = False
+
     uploaded = st.file_uploader(
         "Selecione um arquivo .xlsx",
-        type=["xlsx"]
+        type=["xlsx"],
+        on_change=lambda: st.session_state.update({"upload_processado": False})
     )
 
-    if uploaded:
-        try:
-            with st.spinner("Importando dados..."):
-                df_excel = pd.read_excel(uploaded)
-                validar_colunas_excel(df_excel)
-                for _, row in df_excel.iterrows():
-                    insert_record(row.to_dict())
-            st.success("Importação concluída.")
-        except Exception as e:
-            LOGGER.exception("Erro na importação do Excel.")
-            st.error(f"Erro ao importar Excel: {e}")
+    if uploaded and not st.session_state.upload_processado:
+        with st.spinner("Importando dados..."):
+            df_excel = pd.read_excel(uploaded)
+            validar_colunas_excel(df_excel)
+
+            for _, row in df_excel.iterrows():
+                insert_record(row.to_dict())
+
+        st.session_state.upload_processado = True
+        st.success("Importação concluída.")
+        st.rerun()
 
 # ================= Configurações =================
 with tabs[2]:
-    st.info("Configurações futuras podem ser adicionadas aqui.")
+    st.subheader("👨‍🏫 Cadastro de Professores")
+
+    nome_prof = st.text_input("Nome do professor")
+
+    if st.button("Adicionar professor"):
+        if nome_prof.strip():
+            inserir_professor(nome_prof.strip())
+            st.success("Professor cadastrado.")
+            st.rerun()
+        else:
+            st.warning("Informe um nome válido.")
