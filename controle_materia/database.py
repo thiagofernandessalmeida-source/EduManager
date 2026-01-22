@@ -99,3 +99,23 @@ def delete_record(record_id: int):
     except Exception:
         LOGGER.exception("Erro ao deletar registro.")
         raise
+
+def create_professores_table():
+    sql = """
+    CREATE TABLE IF NOT EXISTS professores (
+        id INTEGER,
+        nome TEXT UNIQUE
+    );
+    """
+    with get_connection() as con:
+        con.execute(sql)
+
+def inserir_professor(nome: str):
+    sql = "INSERT OR IGNORE INTO professores VALUES (NULL, ?)"
+    with get_connection() as con:
+        con.execute(sql, [nome])
+
+def listar_professores():
+    sql = "SELECT nome FROM professores ORDER BY nome"
+    with get_connection() as con:
+        return con.execute(sql).fetchdf()
