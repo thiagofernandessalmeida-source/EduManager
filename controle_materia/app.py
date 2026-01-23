@@ -98,12 +98,12 @@ with tabs[0]:
     # 👉 0 = não filtra
     if filtro_dias > 0:
         df_filtrado = df_filtrado[
-            (df_filtrado["data_limite"].notna()) &
-            ((pd.to_datetime(df_filtrado["data_limite"]) - hoje).dt.days <= filtro_dias)
+            (df_filtrado["data_limite_da_entrega"].notna()) &
+            ((pd.to_datetime(df_filtrado["data_limite_da_entrega"]) - hoje).dt.days <= filtro_dias)
         ]
 
     # ================= Alertas =================
-    df_filtrado["alerta"] = df_filtrado["data_limite"].apply(
+    df_filtrado["alerta"] = df_filtrado["data_limite_da_entrega"].apply(
         lambda d: "⚠️ Prazo próximo"
         if pd.notna(d) and (pd.to_datetime(d) - hoje).days <= dias_alerta
         else ""
@@ -117,16 +117,51 @@ with tabs[0]:
         num_rows="fixed",
         key="editor_materias",
         column_config={
+            "turma": st.column_config.TextColumn(
+                "Turma"
+            ),
+            "materia": st.column_config.TextColumn(
+                "Materia"
+            ),
+            "trimestre": st.column_config.TextColumn(
+                "Trimestre"
+            ),
+            "capitulo": st.column_config.TextColumn(
+                "Capitulo"
+            ),
+            "bloco": st.column_config.TextColumn(
+                "Bloco"
+            ),
+            "validacao_operacional": st.column_config.TextColumn(
+                "Validação Operacional"
+            ),
+            "revisao_pedagogica": st.column_config.TextColumn(
+                "Revisão Pedagógica"
+            ),
+            "diagramacao": st.column_config.TextColumn(
+                "Diagramação"
+            ),
+            "obs": st.column_config.TextColumn(
+                "Observação"
+            ),
             "status": st.column_config.SelectboxColumn(
                 "Status",
                 options=["Não iniciado", "Em andamento", "Concluído"]
             ),
             "professor_titular": st.column_config.SelectboxColumn(
-                "Professor",
+                "Professor Titular",
                 options=professores
             ),
-            "data_limite": st.column_config.DateColumn(
-                "Data Limite",
+            "data_limite_da_entrega": st.column_config.DateColumn(
+                "Data Limite da Entrega",
+                format="DD/MM/YYYY"
+            ),
+            "data_da_entrega": st.column_config.DateColumn(
+                "Data da Entrega",
+                format="DD/MM/YYYY"
+            ),
+            "data_de_aprovacao_final": st.column_config.DateColumn(
+                "Data de Aprovação Final",
                 format="DD/MM/YYYY"
             ),
             "alerta": st.column_config.TextColumn(
@@ -175,22 +210,25 @@ with tabs[1]:
 
     with st.form("form_cadastro"):
         data = {
-            "unidade_tematica": st.text_input("Unidade Temática"),
-            "trimestre": st.text_input("Trimestre"),
-            "capitulo": st.text_input("Capítulo"),
-            "subtemas_sugeridos": st.text_area("Subtemas Sugeridos"),
-            "origem_referencia": st.text_input("Origem / Capítulo Referência"),
-            "materia": st.text_input("Matéria"),
             "turma": st.text_input("Turma"),
-            "status": st.selectbox(
-                "Status",
-                ["Não iniciado", "Em andamento", "Concluído"]
-            ),
-            "data_limite": st.date_input("Data Limite"),
+            "materia": st.text_input("Matéria"),
             "professor_titular": st.selectbox(
                 "Professor Titular",
                 professores
             ),
+            "trimestre": st.text_input("Trimestre"),
+            "capitulo": st.text_input("Capítulo"),
+            "bloco": st.text_input("Bloco"),
+            "status": st.selectbox(
+                "Status",
+                ["Não iniciado", "Em andamento", "Concluído"]
+            ),
+            "data_limite_da_entrega": st.date_input("Data Limite da Entrega", format="DD/MM/YYYY"),
+            "data_da_entrega": st.date_input("Data da Entrega", format="DD/MM/YYYY"),
+            "validacao_operacional": st.text_input("Validacao Operacional"),
+            "revisao_pedagogica": st.text_input("Revisao Pedagogica"),
+            "diagramacao": st.text_input("Diagramacao"),
+            "data_de_aprovacao_final": st.date_input("Data de Aprovacao Final", format="DD/MM/YYYY"),
             "obs": st.text_area("Observações")
         }
 
@@ -220,6 +258,10 @@ with tabs[1]:
         with st.spinner("Importando dados..."):
             df_excel = pd.read_excel(uploaded)
             validar_colunas_excel(df_excel)
+            df_excel = df_excel.astype(str)
+            df_excel = df_excel.replace(
+                {"NaT": None, "nan": None, "None": None}
+            )
 
             for _, row in df_excel.iterrows():
                 insert_record(row.to_dict())

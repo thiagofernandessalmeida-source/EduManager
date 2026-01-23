@@ -17,16 +17,19 @@ def create_table():
     sql_table = """
     CREATE TABLE IF NOT EXISTS controle_materia (
         id BIGINT DEFAULT nextval('seq_controle_materia_id'),
-        unidade_tematica TEXT,
+        turma TEXT,
+        materia TEXT,
+        professor_titular TEXT,
         trimestre TEXT,
         capitulo TEXT,
-        subtemas_sugeridos TEXT,
-        origem_referencia TEXT,
-        materia TEXT,
-        turma TEXT,
+        bloco TEXT,
         status TEXT,
-        data_limite DATE,
-        professor_titular TEXT,
+        data_limite_da_entrega DATE,
+        data_da_entrega DATE,
+        validacao_operacional TEXT,
+        revisao_pedagogica TEXT,
+        diagramacao TEXT,
+        data_de_aprovacao_final DATE,
         obs TEXT
     );
     """
@@ -70,6 +73,7 @@ def insert_record(data: dict):
         with get_connection() as con:
             con.execute(sql, list(data.values()))
         LOGGER.info("Registro inserido com sucesso.")
+        LOGGER.info("Iseridos {} registros.".format(len(data)))
     except Exception:
         LOGGER.exception("Erro ao inserir registro.")
         raise
