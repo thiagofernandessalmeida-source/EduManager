@@ -8,10 +8,10 @@ LOGGER = logging.getLogger("services")
 
 def validar_colunas_excel(df: pd.DataFrame):
     required = {
-        "unidade_tematica", "trimestre", "capitulo",
-        "subtemas_sugeridos", "origem_referencia",
-        "materia", "turma", "status",
-        "data_limite", "professor_titular", "obs"
+        "turma","materia","professor_titular","trimestre",
+        "capitulo","bloco","status","data_limite_da_entrega",
+        "data_da_entrega","validacao_operacional","revisao_pedagogica",
+        "diagramacao","data_de_aprovacao_final","obs"
     }
     missing = required - set(df.columns)
     if missing:
@@ -22,10 +22,10 @@ def calcular_alertas(df: pd.DataFrame, dias_alerta: int):
     hoje = datetime.today().date()
     limite = hoje + timedelta(days=dias_alerta)
 
-    df["data_limite"] = pd.to_datetime(df["data_limite"]).dt.date
+    df["data_limite_da_entrega"] = pd.to_datetime(df["data_limite_da_entrega"]).dt.date
 
     alertas = df[
-        (df["data_limite"] <= limite) &
+        (df["data_limite_da_entrega"] <= limite) &
         (df["status"] != "Concluído")
     ]
 
