@@ -1,13 +1,15 @@
 import streamlit as st
 import pandas as pd
 import logging
+from sqlalchemy import text
 from logger_config import setup_logger
 from database import (
     create_table, fetch_all,
-    insert_record, update_status, delete_record,
-    create_professores_table, inserir_professor, listar_professores
+    insert_record, delete_record,
+    create_professores_table, inserir_professor, listar_professores,
+    get_session
 )
-from services import validar_colunas_excel, calcular_alertas
+from services import validar_colunas_excel
 
 # ================= Setup =================
 setup_logger()
@@ -19,13 +21,6 @@ if "db_initialized" not in st.session_state:
     create_table()
     create_professores_table()
     st.session_state.db_initialized = True
-
-
-STATUS_CORES = {
-    "Não iniciado": "🔴",
-    "Em andamento": "🟡",
-    "Concluído": "🟢"
-}
 
 st.title("📚 EduManager – Controle e Gerenciamento de Matéria Escolar")
 
@@ -46,40 +41,37 @@ with tabs[0]:
     professores_df = listar_professores()
     professores = professores_df["nome"].tolist() if not professores_df.empty else []
 
-    # ================= Filtros =================
     st.subheader("🔎 Filtros")
 
     col1, col2, col3, col4 = st.columns(4)
 
     filtro_turma = col1.selectbox(
-        "Filtrar por Turma",
+        "Turma",
         ["Todos"] + sorted(df["turma"].dropna().unique().tolist())
     )
 
     filtro_prof = col2.selectbox(
-        "Filtrar por Professor",
+        "Professor",
         ["Todos"] + sorted(df["professor_titular"].dropna().unique().tolist())
     )
 
     filtro_materia = col3.selectbox(
-        "Filtrar por Matéria",
+        "Matéria",
         ["Todos"] + sorted(df["materia"].dropna().unique().tolist())
     )
 
     filtro_capitulo = col4.selectbox(
-        "Filtrar por Capítulo",
+        "Capítulo",
         ["Todos"] + sorted(df["capitulo"].dropna().unique().tolist())
     )
 
-    col_dias, _ = st.columns([1, 3])
-    filtro_dias = col_dias.number_input(
+    filtro_dias = st.number_input(
         "Mostrar matérias com prazo em até (dias)",
         min_value=0,
         value=0,
         help="0 = mostrar todas"
     )
 
-    # ================= Aplicar filtros =================
     hoje = pd.Timestamp.today().normalize()
     df_filtrado = df.copy()
 
@@ -95,19 +87,19 @@ with tabs[0]:
     if filtro_capitulo != "Todos":
         df_filtrado = df_filtrado[df_filtrado["capitulo"] == filtro_capitulo]
 
-    # 👉 0 = não filtra
     if filtro_dias > 0:
         df_filtrado = df_filtrado[
             (df_filtrado["data_limite_da_entrega"].notna()) &
             ((pd.to_datetime(df_filtrado["data_limite_da_entrega"]) - hoje).dt.days <= filtro_dias)
         ]
 
-    # ================= Alertas =================
     df_filtrado["alerta"] = df_filtrado["data_limite_da_entrega"].apply(
         lambda d: "⚠️ Prazo próximo"
         if pd.notna(d) and (pd.to_datetime(d) - hoje).days <= dias_alerta
         else ""
     )
+
+    df_filtrado["excluir"] = False
 
     st.subheader("✏️ Controle de Matérias")
 
@@ -117,33 +109,7 @@ with tabs[0]:
         num_rows="fixed",
         key="editor_materias",
         column_config={
-            "turma": st.column_config.TextColumn(
-                "Turma"
-            ),
-            "materia": st.column_config.TextColumn(
-                "Materia"
-            ),
-            "trimestre": st.column_config.TextColumn(
-                "Trimestre"
-            ),
-            "capitulo": st.column_config.TextColumn(
-                "Capitulo"
-            ),
-            "bloco": st.column_config.TextColumn(
-                "Bloco"
-            ),
-            "validacao_operacional": st.column_config.TextColumn(
-                "Validação Operacional"
-            ),
-            "revisao_pedagogica": st.column_config.TextColumn(
-                "Revisão Pedagógica"
-            ),
-            "diagramacao": st.column_config.TextColumn(
-                "Diagramação"
-            ),
-            "obs": st.column_config.TextColumn(
-                "Observação"
-            ),
+            "excluir": st.column_config.CheckboxColumn("🗑️ Excluir"),
             "status": st.column_config.SelectboxColumn(
                 "Status",
                 options=["Não iniciado", "Em andamento", "Concluído"]
@@ -153,7 +119,7 @@ with tabs[0]:
                 options=professores
             ),
             "data_limite_da_entrega": st.column_config.DateColumn(
-                "Data Limite da Entrega",
+                "Data Limite",
                 format="DD/MM/YYYY"
             ),
             "data_da_entrega": st.column_config.DateColumn(
@@ -161,7 +127,7 @@ with tabs[0]:
                 format="DD/MM/YYYY"
             ),
             "data_de_aprovacao_final": st.column_config.DateColumn(
-                "Data de Aprovação Final",
+                "Aprovação Final",
                 format="DD/MM/YYYY"
             ),
             "alerta": st.column_config.TextColumn(
@@ -171,9 +137,11 @@ with tabs[0]:
         }
     )
 
-    col_save, _ = st.columns([1, 5])
+    col_save, col_delete = st.columns(2)
 
+    # ===== SALVAR ALTERAÇÕES =====
     if col_save.button("💾 Salvar alterações"):
+        session = get_session()
         try:
             for _, row in edited_df.iterrows():
                 original = df[df["id"] == row["id"]].iloc[0]
@@ -181,102 +149,105 @@ with tabs[0]:
                 changes = {
                     col: row[col]
                     for col in df.columns
-                    if row[col] != original[col]
+                    if col not in ["alerta"] and row[col] != original[col]
                 }
 
                 if changes:
-                    set_clause = ", ".join([f"{k} = ?" for k in changes])
-                    values = list(changes.values()) + [row["id"]]
+                    set_clause = ", ".join([f"{k} = :{k}" for k in changes])
+                    sql = text(f"""
+                        UPDATE edumanager.controle_materia
+                        SET {set_clause}
+                        WHERE id = :id
+                    """)
+                    changes["id"] = row["id"]
+                    session.execute(sql, changes)
 
-                    from database import get_connection
-                    with get_connection() as con:
-                        con.execute(
-                            f"UPDATE controle_materia SET {set_clause} WHERE id = ?",
-                            values
-                        )
-
+            session.commit()
             st.success("Alterações salvas com sucesso.")
             st.rerun()
 
         except Exception:
+            session.rollback()
+            LOGGER.exception("Erro ao salvar.")
             st.error("Erro ao salvar alterações.")
+        finally:
+            session.close()
+
+    # ===== EXCLUIR =====
+    if col_delete.button("🗑️ Excluir selecionados"):
+        ids = edited_df[edited_df["excluir"] == True]["id"].tolist()
+
+        if not ids:
+            st.warning("Nenhum registro selecionado.")
+        else:
+            session = get_session()
+            try:
+                for rid in ids:
+                    session.execute(
+                        text("DELETE FROM edumanager.controle_materia WHERE id = :id"),
+                        {"id": rid}
+                    )
+                session.commit()
+                st.success(f"{len(ids)} registro(s) excluído(s).")
+                st.rerun()
+            except Exception:
+                session.rollback()
+                LOGGER.exception("Erro ao excluir.")
+                st.error("Erro ao excluir registros.")
+            finally:
+                session.close()
 
 # ================= Cadastro =================
 with tabs[1]:
     professores_df = listar_professores()
     professores = professores_df["nome"].tolist() if not professores_df.empty else []
 
-    st.session_state.pop("form_enviado", None)
-
     with st.form("form_cadastro"):
         data = {
             "turma": st.text_input("Turma"),
             "materia": st.text_input("Matéria"),
-            "professor_titular": st.selectbox(
-                "Professor Titular",
-                professores
-            ),
+            "professor_titular": st.selectbox("Professor", professores),
             "trimestre": st.text_input("Trimestre"),
             "capitulo": st.text_input("Capítulo"),
             "bloco": st.text_input("Bloco"),
-            "status": st.selectbox(
-                "Status",
-                ["Não iniciado", "Em andamento", "Concluído"]
-            ),
-            "data_limite_da_entrega": st.date_input("Data Limite da Entrega", format="DD/MM/YYYY"),
-            "data_da_entrega": st.date_input("Data da Entrega", format="DD/MM/YYYY"),
-            "validacao_operacional": st.text_input("Validacao Operacional"),
-            "revisao_pedagogica": st.text_input("Revisao Pedagogica"),
-            "diagramacao": st.text_input("Diagramacao"),
-            "data_de_aprovacao_final": st.date_input("Data de Aprovacao Final", format="DD/MM/YYYY"),
+            "status": st.selectbox("Status", ["Não iniciado", "Em andamento", "Concluído"]),
+            "data_limite_da_entrega": st.date_input("Data Limite"),
+            "data_da_entrega": st.date_input("Data da Entrega"),
+            "validacao_operacional": st.text_input("Validação Operacional"),
+            "revisao_pedagogica": st.text_input("Revisão Pedagógica"),
+            "diagramacao": st.text_input("Diagramação"),
+            "data_de_aprovacao_final": st.date_input("Aprovação Final"),
             "obs": st.text_area("Observações")
         }
 
-        submitted = st.form_submit_button("Salvar")
-
-        if submitted:
+        if st.form_submit_button("Salvar"):
             insert_record(data)
-            st.success("Registro cadastrado com sucesso.")
-
-            if "form_enviado" not in st.session_state:
-                st.session_state.form_enviado = True
-                st.rerun()
+            st.success("Registro cadastrado.")
+            st.rerun()
 
     st.divider()
     st.subheader("📥 Importar Excel")
 
-    if "upload_processado" not in st.session_state:
-        st.session_state.upload_processado = False
+    uploaded = st.file_uploader("Arquivo .xlsx", type=["xlsx"])
 
-    uploaded = st.file_uploader(
-        "Selecione um arquivo .xlsx",
-        type=["xlsx"],
-        on_change=lambda: st.session_state.update({"upload_processado": False})
-    )
+    if uploaded:
+        df_excel = pd.read_excel(uploaded)
+        validar_colunas_excel(df_excel)
+        df_excel = df_excel.astype(str).replace({"nan": None, "NaT": None})
 
-    if uploaded and not st.session_state.upload_processado:
-        with st.spinner("Importando dados..."):
-            df_excel = pd.read_excel(uploaded)
-            validar_colunas_excel(df_excel)
-            df_excel = df_excel.astype(str)
-            df_excel = df_excel.replace(
-                {"NaT": None, "nan": None, "None": None}
-            )
+        for _, row in df_excel.iterrows():
+            insert_record(row.to_dict())
 
-            for _, row in df_excel.iterrows():
-                insert_record(row.to_dict())
-
-        st.session_state.upload_processado = True
         st.success("Importação concluída.")
         st.rerun()
 
 # ================= Configurações =================
 with tabs[2]:
-    st.subheader("👨‍🏫 Cadastro de Professores")
+    st.subheader("👨‍🏫 Professores")
 
     nome_prof = st.text_input("Nome do professor")
 
-    if st.button("Adicionar professor"):
+    if st.button("Adicionar"):
         if nome_prof.strip():
             inserir_professor(nome_prof.strip())
             st.success("Professor cadastrado.")
