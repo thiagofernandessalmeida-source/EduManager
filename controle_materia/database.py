@@ -1,125 +1,169 @@
-import duckdb
+import os
 import logging
+import pandas as pd
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 
-DB_FILE = "controle_materia.db"
 LOGGER = logging.getLogger("database")
 
+# ======================================================
+# Conexão PostgreSQL (Neon / Cloud / Local)
+# ======================================================
 
-def get_connection():
-    return duckdb.connect(DB_FILE)
+DATABASE_URL = os.getenv("DATABASE_URL")
 
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL não definida")
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,   # acorda o Neon automaticamente
+    pool_size=5,
+    max_overflow=10,
+)
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine
+)
+
+def get_session():
+    return SessionLocal()
+
+# ======================================================
+# DDL
+# ======================================================
 
 def create_table():
-    sql_sequence = """
-    CREATE SEQUENCE IF NOT EXISTS seq_controle_materia_id;
-    """
+    sql = """
+    CREATE SCHEMA IF NOT EXISTS edumanager;
 
-    sql_table = """
-    CREATE TABLE IF NOT EXISTS controle_materia (
-        id BIGINT DEFAULT nextval('seq_controle_materia_id'),
-        turma TEXT,
-        materia TEXT,
-        professor_titular TEXT,
-        trimestre TEXT,
-        capitulo TEXT,
-        bloco TEXT,
-        status TEXT,
+    CREATE TABLE IF NOT EXISTS edumanager.controle_materia (
+        id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        turma VARCHAR,
+        materia VARCHAR,
+        professor_titular VARCHAR,
+        trimestre VARCHAR,
+        capitulo VARCHAR,
+        bloco VARCHAR,
+        status VARCHAR,
         data_limite_da_entrega DATE,
         data_da_entrega DATE,
-        validacao_operacional TEXT,
-        revisao_pedagogica TEXT,
-        diagramacao TEXT,
+        validacao_operacional VARCHAR,
+        revisao_pedagogica VARCHAR,
+        diagramacao VARCHAR,
         data_de_aprovacao_final DATE,
-        obs TEXT
+        obs VARCHAR
     );
     """
+    with engine.begin() as conn:
+        conn.execute(text(sql))
 
-    try:
-        with get_connection() as con:
-            con.execute(sql_sequence)
-            con.execute(sql_table)
+    LOGGER.info("Tabela controle_materia verificada/criada.")
 
-        LOGGER.info("Tabela e sequence criadas/verificadas com sucesso.")
-    except Exception:
-        LOGGER.exception("Erro ao criar tabela ou sequence.")
-        raise
+def create_professores_table():
+    sql = """
+    CREATE TABLE IF NOT EXISTS edumanager.professores (
+        id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        nome VARCHAR UNIQUE
+    );
+    """
+    with engine.begin() as conn:
+        conn.execute(text(sql))
 
+    LOGGER.info("Tabela professores verificada/criada.")
 
-def fetch_all(filters=None):
-    base_query = "SELECT * FROM controle_materia"
-    params = []
+# ======================================================
+# CRUD
+# ======================================================
+
+def fetch_all(filters: dict | None = None) -> pd.DataFrame:
+    base_sql = "SELECT * FROM edumanager.controle_materia"
+    params = {}
 
     if filters:
         clauses = []
         for key, value in filters.items():
-            clauses.append(f"{key} = ?")
-            params.append(value)
-        base_query += " WHERE " + " AND ".join(clauses)
+            clauses.append(f"{key} = :{key}")
+            params[key] = value
+        base_sql += " WHERE " + " AND ".join(clauses)
 
-    try:
-        with get_connection() as con:
-            return con.execute(base_query, params).fetchdf()
-    except Exception:
-        LOGGER.exception("Erro ao buscar dados.")
-        raise
-
+    with engine.connect() as conn:
+        result = conn.execute(text(base_sql), params)
+        return pd.DataFrame(result.fetchall(), columns=result.keys())
 
 def insert_record(data: dict):
     keys = ", ".join(data.keys())
-    placeholders = ", ".join(["?"] * len(data))
-    sql = f"INSERT INTO controle_materia ({keys}) VALUES ({placeholders})"
+    values = ", ".join([f":{k}" for k in data.keys()])
 
+    sql = text(f"""
+        INSERT INTO edumanager.controle_materia ({keys})
+        VALUES ({values})
+    """)
+
+    session = get_session()
     try:
-        with get_connection() as con:
-            con.execute(sql, list(data.values()))
+        session.execute(sql, data)
+        session.commit()
         LOGGER.info("Registro inserido com sucesso.")
-        LOGGER.info("Iseridos {} registros.".format(len(data)))
     except Exception:
+        session.rollback()
         LOGGER.exception("Erro ao inserir registro.")
         raise
-
+    finally:
+        session.close()
 
 def update_status(record_id: int, status: str):
+    sql = text("""
+        UPDATE edumanager.controle_materia
+        SET status = :status
+        WHERE id = :id
+    """)
+    session = get_session()
     try:
-        with get_connection() as con:
-            con.execute(
-                "UPDATE controle_materia SET status = ? WHERE id = ?",
-                [status, record_id]
-            )
+        session.execute(sql, {"status": status, "id": record_id})
+        session.commit()
         LOGGER.info(f"Status atualizado para ID {record_id}.")
     except Exception:
+        session.rollback()
         LOGGER.exception("Erro ao atualizar status.")
         raise
-
+    finally:
+        session.close()
 
 def delete_record(record_id: int):
+    sql = text("""
+        DELETE FROM edumanager.controle_materia
+        WHERE id = :id
+    """)
+    session = get_session()
     try:
-        with get_connection() as con:
-            con.execute(
-                "DELETE FROM controle_materia WHERE id = ?",
-                [record_id]
-            )
+        session.execute(sql, {"id": record_id})
+        session.commit()
         LOGGER.info(f"Registro removido: ID {record_id}.")
     except Exception:
+        session.rollback()
         LOGGER.exception("Erro ao deletar registro.")
         raise
-
-def create_professores_table():
-    sql = """
-    CREATE TABLE IF NOT EXISTS professores (
-        id INTEGER,
-        nome TEXT UNIQUE
-    );
-    """
-    with get_connection() as con:
-        con.execute(sql)
+    finally:
+        session.close()
 
 def inserir_professor(nome: str):
-    sql = "INSERT OR IGNORE INTO professores VALUES (NULL, ?)"
-    with get_connection() as con:
-        con.execute(sql, [nome])
+    sql = text("""
+        INSERT INTO edumanager.professores (nome)
+        VALUES (:nome)
+        ON CONFLICT (nome) DO NOTHING
+    """)
+    session = get_session()
+    try:
+        session.execute(sql, {"nome": nome})
+        session.commit()
+    finally:
+        session.close()
 
-def listar_professores():
-    sql = "SELECT nome FROM professores ORDER BY nome"
-    with get_connection() as con:
-        return con.execute(sql).fetchdf()
+def listar_professores() -> pd.DataFrame:
+    sql = "SELECT nome FROM edumanager.professores ORDER BY nome"
+    with engine.connect() as conn:
+        result = conn.execute(text(sql))
+        return pd.DataFrame(result.fetchall(), columns=result.keys())
