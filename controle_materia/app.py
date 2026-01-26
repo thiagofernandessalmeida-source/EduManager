@@ -114,9 +114,8 @@ with tabs[0]:
                 "Status",
                 options=["Não iniciado", "Em andamento", "Concluído"]
             ),
-            "professor_titular": st.column_config.SelectboxColumn(
-                "Professor Titular",
-                options=professores
+            "professor_titular": st.column_config.TextColumn(
+                "Professor Titular"
             ),
             "data_limite_da_entrega": st.column_config.DateColumn(
                 "Data Limite",
