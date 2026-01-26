@@ -163,7 +163,7 @@ def inserir_professor(nome: str):
         session.close()
 
 def listar_professores() -> pd.DataFrame:
-    sql = "SELECT nome FROM edumanager.professores ORDER BY nome"
+    sql = "select distinct professor_titular as nome from 	edumanager.controle_materia"
     with engine.connect() as conn:
         result = conn.execute(text(sql))
         return pd.DataFrame(result.fetchall(), columns=result.keys())
