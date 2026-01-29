@@ -1,5 +1,6 @@
 import os
 import logging
+import duckdb as db
 import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -79,7 +80,48 @@ def create_professores_table():
 # ======================================================
 
 def fetch_all(filters: dict | None = None) -> pd.DataFrame:
-    base_sql = "SELECT * FROM edumanager.controle_materia"
+    base_sql = """
+    SELECT 
+        a.id
+        ,a.turma                   
+        ,a.materia                 
+        ,a.professor_titular       
+        ,a.trimestre               
+        ,a.capitulo                
+        ,a.bloco                   
+        ,case 
+            when coalesce (b.status, a.status) is not null 
+                and coalesce (b.status, a.status) = 'Concluido' 
+                and a.data_de_aprovacao_final is null then 'Aguardando revisão pedagógica'
+                else coalesce (b.status, a.status)
+                end as status                   
+        ,case when b.bloco is not null then b.data_limite_da_entrega else a.data_limite_da_entrega end as data_limite_da_entrega
+        ,a.data_da_entrega         
+        ,a.validacao_operacional   
+        ,a.revisao_pedagogica      
+        ,a.diagramacao             
+        ,a.data_de_aprovacao_final 
+        ,a.obs 
+        FROM edumanager.controle_materia a
+        left join (select a.bloco, a.data_limite_da_entrega
+        ,case 
+            when current_date <= a.data_limite_da_entrega 
+                and a.bloco::int - 1 = 0 
+                    then 'Em andamento' 
+            when current_date > a.data_limite_da_entrega 
+                and a.bloco::int - 1 = 0 
+                    then 'Concluido'
+            when current_date < a.data_limite_da_entrega 
+                and current_date > (select b.data_limite_da_entrega from edumanager.bloco b where b.bloco::int = a.bloco::int - 1)
+                    then 'Em andamento'
+            when current_date < a.data_limite_da_entrega 
+                and current_date < (select b.data_limite_da_entrega from edumanager.bloco b where b.bloco::int = a.bloco::int - 1)
+                    then 'Não iniciado'
+            else 'Concluido'
+        end as status
+        from edumanager.bloco a ) b on a.bloco = b.bloco
+        ORDER BY a.id
+    """
     params = {}
 
     if filters:
@@ -99,6 +141,27 @@ def insert_record(data: dict):
 
     sql = text(f"""
         INSERT INTO edumanager.controle_materia ({keys})
+        VALUES ({values})
+    """)
+
+    session = get_session()
+    try:
+        session.execute(sql, data)
+        session.commit()
+        LOGGER.info("Registro inserido com sucesso.")
+    except Exception:
+        session.rollback()
+        LOGGER.exception("Erro ao inserir registro.")
+        raise
+    finally:
+        session.close()
+
+def insert_bloco(data: dict):
+    keys = ", ".join(data.keys())
+    values = ", ".join([f":{k}" for k in data.keys()])
+
+    sql = text(f"""
+        INSERT INTO edumanager.bloco ({keys})
         VALUES ({values})
     """)
 
@@ -167,3 +230,42 @@ def listar_professores() -> pd.DataFrame:
     with engine.connect() as conn:
         result = conn.execute(text(sql))
         return pd.DataFrame(result.fetchall(), columns=result.keys())
+
+def login_user(email: str, password: str) -> str | None:
+    sql = text("""
+        SELECT status
+        FROM edumanager.users
+        WHERE email = :email
+          AND password = :password
+        LIMIT 1
+    """)
+
+    with engine.connect() as conn:
+        result = conn.execute(
+            sql,
+            {"email": email, "password": password}
+        ).fetchone()
+
+    if result:
+        return result.status   # ou result[0]
+    return None
+
+
+def cadastrar_novo_usuario(email: str, password: str, status: str):
+
+    sql = text("""
+        INSERT INTO edumanager.users (email, password, status)
+        VALUES (:email, :password, :status)
+    """)
+
+    with engine.begin() as conn:
+        conn.execute(
+            sql,
+            {"email": email, "password": password, "status": status}
+        )
+
+    return f"user {email} cadastrado com sucesso com status {status}"
+
+
+
+
