@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 LOGGER = logging.getLogger("database")
 
+
 # ======================================================
 # Conexão PostgreSQL (Neon / Cloud / Local)
 # ======================================================
