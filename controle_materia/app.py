@@ -1,5 +1,4 @@
 from time import sleep
-
 import streamlit as st
 import pandas as pd
 import logging
