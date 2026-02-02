@@ -262,6 +262,7 @@ if st.session_state.status in ["super_admin", "admin"]:
             st.success("Importação concluída.")
             st.rerun()
 
+        # ================= CADASTRO DE BLOCO ==================
         st.divider()
         st.subheader("📥 Cadastrar Bloco")
 
